@@ -1,83 +1,102 @@
 # psystemd
 
-`psystemd` is a Python library that provides an easy-to-use interface for managing systemd services via DBus. It allows users to check the status of services, start, stop, restart, and enable them, as well as retrieve error details if available.
-
-## Features
-- Retrieve the status (ActiveState, SubState) of a systemd service
-- Start, stop, restart, and enable services
-- Retrieve error-related information (Result, ExecMainStatus, ExecMainCode) if available
+A thin Python wrapper around the systemd DBus API for managing services.
 
 ## Requirements
+
 - Python 3.x
-- `python-dbus` package
-- A Linux distribution that uses `systemd`
+- `dbus-python` (system package `python3-dbus`)
+- A Linux system running systemd
+- DBus permissions to manage systemd units (typically requires root or appropriate polkit rules)
 
 ## Installation
-Ensure that `python-dbus` is installed:
+
+Install the system dependency, then clone:
+
 ```sh
-sudo apt install python3-dbus  # Debian-based
-sudo dnf install python3-dbus  # Fedora-based
-```
-Then, clone the repository:
-```sh
-git clone https://github.com/yourusername/psystemd.git
-cd psystemd
+# Debian/Ubuntu
+sudo apt install python3-dbus
+
+# Fedora
+sudo dnf install python3-dbus
+
+# Arch
+sudo pacman -S python-dbus
+
+git clone https://github.com/HACKE-RC/psystemd.git
 ```
 
 ## Usage
 
-### Example
 ```python
 from psystemd import SystemdServiceManager
 
-service_name = "ssh.service"  # Change this to your desired service
 manager = SystemdServiceManager()
 
-# Check the status of the service
-status = manager.get_unit_status(service_name)
-print(f"Status of {service_name}: {status}")
+# Check status
+status = manager.get_unit_status("ssh.service")
+print(status)  # {"ActiveState": "active", "SubState": "running"}
 
-# Start the service
-manager.start(service_name)
+# Control the service — returns immediately, job runs asynchronously
+manager.stop("ssh.service")
+manager.start("ssh.service")
+manager.restart("ssh.service")
 
-# Retrieve errors if any
-errors = manager.get_errors(service_name)
-print(f"Error information for {service_name}: {errors}")
+# Enable at boot (raises UnitNotEnabledError if the unit has no [Install] section)
+manager.enable("ssh.service")
+
+# Inspect errors on a failed service
+errors = manager.get_errors("my-failed.service")
+print(errors)  # {"Result": "exit-code", "ExecMainStatus": 1, "ExecMainCode": 1}
 ```
+
+## Exceptions
+
+All methods raise `psystemd.SystemdServiceError` (or its subclasses) on failure:
+
+- `SystemdServiceError` — base exception for all psystemd errors
+- `UnitNotFoundError` — the unit does not exist on disk or in systemd
+- `UnitNotEnabledError` — raised by `enable()` when the unit has no `[Install]` section
 
 ## API Reference
 
-### `get_unit_status(service_name: str) -> dict`
-Retrieves the status of the specified service.
+### `SystemdServiceManager()`
 
-**Returns:**
+Connects to the system bus and creates a handle to `org.freedesktop.systemd1.Manager`.
+
+### `get_unit(service_name: str)`
+
+Returns the raw DBus object for a unit. Tries `GetUnit` first, falling back to `LoadUnit` for units that exist on disk but aren't yet loaded. Raises `UnitNotFoundError` if the unit cannot be found.
+
+### `get_unit_status(service_name: str) -> dict`
+
 ```python
-{
-    "ActiveState": "active" | "inactive" | "failed" | ...,
-    "SubState": "running" | "dead" | "exited" | ...
-}
+{"ActiveState": str, "SubState": str}
 ```
+
+`ActiveState` is one of `active`, `inactive`, `failed`, `activating`, `deactivating`, `reloading`.
+`SubState` is the unit-type-specific substate (`running`, `dead`, `exited`, `plugged`, `mounted`, etc.).
 
 ### `start(service_name: str)`
-Starts the specified service.
+
+Enqueues a start job with `mode="replace"` and returns immediately. The job runs asynchronously — use `get_unit_status` to confirm the new state.
 
 ### `stop(service_name: str)`
-Stops the specified service.
+
+Enqueues a stop job with `mode="replace"` and returns immediately.
 
 ### `restart(service_name: str)`
-Restarts the specified service.
+
+Enqueues a restart job with `mode="replace"` and returns immediately.
 
 ### `enable(service_name: str)`
-Enables the service to start at boot.
+
+Symlinks the unit file into the machine's wanted-by targets so it starts at boot. Raises `UnitNotEnabledError` if the unit has no `[Install]` section.
 
 ### `get_errors(service_name: str) -> dict`
-Retrieves error-related properties, if available.
 
-**Returns:**
 ```python
-{
-    "Result": "success" | "failed" | "timeout" | ...,
-    "ExecMainStatus": 0 (success) | nonzero (error code),
-    "ExecMainCode": 0 (exited cleanly) | other values
-}
+{"Result": str, "ExecMainStatus": int, "ExecMainCode": int}
 ```
+
+Returns the result of the last execution. Falls back to `{"Error": "No additional error information available."}` if the unit is not a service type (e.g., a `.mount` or `.socket` unit).

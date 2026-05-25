@@ -1,6 +1,21 @@
 import dbus
 
 
+class SystemdServiceError(Exception):
+    """Base exception for psystemd errors."""
+    pass
+
+
+class UnitNotFoundError(SystemdServiceError):
+    """The specified unit was not found."""
+    pass
+
+
+class UnitNotEnabledError(SystemdServiceError):
+    """The unit file has no [Install] section and cannot be enabled."""
+    pass
+
+
 class SystemdServiceManager:
     """
     A class to manage systemd services using DBus.
@@ -26,15 +41,21 @@ class SystemdServiceManager:
         """
         Retrieve the DBus unit object for a given systemd service.
 
+        Tries GetUnit first, falling back to LoadUnit for units that exist
+        on disk but are not yet loaded into systemd's memory.
+
         :param service_name: Name of the service (e.g., 'ssh.service').
         :return: The DBus object representing the unit.
-        :raises Exception: If the service unit cannot be found.
+        :raises UnitNotFoundError: If the service unit cannot be found.
         """
         try:
             unit_path = self.manager.GetUnit(service_name)
-            return self.bus.get_object('org.freedesktop.systemd1', unit_path)
-        except dbus.DBusException as e:
-            raise Exception(f"Error retrieving unit for {service_name}: {e}")
+        except dbus.DBusException:
+            try:
+                unit_path = self.manager.LoadUnit(service_name)
+            except dbus.DBusException as e:
+                raise UnitNotFoundError(f"Unit not found: {service_name}") from e
+        return self.bus.get_object('org.freedesktop.systemd1', unit_path)
 
     def get_unit_status(self, service_name):
         """
@@ -47,60 +68,75 @@ class SystemdServiceManager:
         """
         unit = self.get_unit(service_name)
         props = dbus.Interface(unit, 'org.freedesktop.DBus.Properties')
-        active_state = props.Get('org.freedesktop.systemd1.Unit', 'ActiveState')
-        sub_state = props.Get('org.freedesktop.systemd1.Unit', 'SubState')
+        try:
+            active_state = props.Get('org.freedesktop.systemd1.Unit', 'ActiveState')
+            sub_state = props.Get('org.freedesktop.systemd1.Unit', 'SubState')
+        except dbus.DBusException as e:
+            raise SystemdServiceError(f"Error getting status for {service_name}: {e}") from e
         return {"ActiveState": active_state, "SubState": sub_state}
 
     def start(self, service_name):
         """
         Start the specified service.
 
+        Note: This method returns immediately; the start job runs
+        asynchronously. Use get_unit_status to confirm the service
+        has reached the desired state.
+
         :param service_name: Name of the service.
-        :raises Exception: If an error occurs while starting the service.
+        :raises SystemdServiceError: If an error occurs while starting.
         """
         try:
             self.manager.StartUnit(service_name, "replace")
         except dbus.DBusException as e:
-            raise Exception(f"Error starting service {service_name}: {e}")
+            raise SystemdServiceError(f"Error starting service {service_name}: {e}") from e
 
     def stop(self, service_name):
         """
         Stop the specified service.
 
+        Note: This method returns immediately; the stop job runs
+        asynchronously.
+
         :param service_name: Name of the service.
-        :raises Exception: If an error occurs while stopping the service.
+        :raises SystemdServiceError: If an error occurs while stopping.
         """
         try:
             self.manager.StopUnit(service_name, "replace")
         except dbus.DBusException as e:
-            raise Exception(f"Error stopping service {service_name}: {e}")
+            raise SystemdServiceError(f"Error stopping service {service_name}: {e}") from e
 
     def restart(self, service_name):
         """
         Restart the specified service.
 
+        Note: This method returns immediately; the restart job runs
+        asynchronously.
+
         :param service_name: Name of the service.
-        :raises Exception: If an error occurs while restarting the service.
+        :raises SystemdServiceError: If an error occurs while restarting.
         """
         try:
             self.manager.RestartUnit(service_name, "replace")
         except dbus.DBusException as e:
-            raise Exception(f"Error restarting service {service_name}: {e}")
+            raise SystemdServiceError(f"Error restarting service {service_name}: {e}") from e
 
     def enable(self, service_name):
         """
         Enable the specified service to start at boot.
 
-        Note: systemd expects a list of unit file names.
-
-        :param service_name: Name of the service.
-        :raises Exception: If an error occurs while enabling the service.
+        :param service_name: Name of the service file (e.g., 'ssh.service').
+        :raises SystemdServiceError: If a DBus error occurs.
+        :raises UnitNotEnabledError: If the unit has no [Install] section.
         """
         try:
-            # The EnableUnitFiles method expects a list of unit file names.
-            self.manager.EnableUnitFiles([service_name], False, True)
+            carries_install_info, _changes = self.manager.EnableUnitFiles(
+                [service_name], False, False)
         except dbus.DBusException as e:
-            raise Exception(f"Error enabling service {service_name}: {e}")
+            raise SystemdServiceError(f"Error enabling service {service_name}: {e}") from e
+        if not carries_install_info:
+            raise UnitNotEnabledError(
+                f"Unit {service_name} has no [Install] section and cannot be enabled")
 
     def get_errors(self, service_name):
         """
@@ -117,7 +153,6 @@ class SystemdServiceManager:
         unit = self.get_unit(service_name)
         props = dbus.Interface(unit, 'org.freedesktop.DBus.Properties')
 
-        # Attempt to get properties specific to service units.
         try:
             result = props.Get('org.freedesktop.systemd1.Service', 'Result')
             exec_status = props.Get('org.freedesktop.systemd1.Service', 'ExecMainStatus')
@@ -128,5 +163,4 @@ class SystemdServiceManager:
                 "ExecMainCode": exec_code
             }
         except dbus.DBusException:
-            # If these properties aren't available, provide a fallback message.
             return {"Error": "No additional error information available."}
