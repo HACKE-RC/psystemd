@@ -60,43 +60,46 @@ All methods raise `psystemd.SystemdServiceError` (or its subclasses) on failure:
 
 ## API Reference
 
-### `SystemdServiceManager()`
+### Constructor
+
+**`SystemdServiceManager()`**
 
 Connects to the system bus and creates a handle to `org.freedesktop.systemd1.Manager`.
 
-### `get_unit(service_name: str)`
+### Query methods
 
-Returns the raw DBus object for a unit. Tries `GetUnit` first, falling back to `LoadUnit` for units that exist on disk but aren't yet loaded. Raises `UnitNotFoundError` if the unit cannot be found.
+**`get_unit(service_name: str)`**
 
-### `get_unit_status(service_name: str) -> dict`
+Returns the raw DBus object for a unit. Tries `GetUnit` first, falling back to `LoadUnit` for units that exist on disk but aren't yet loaded.
 
-```python
-{"ActiveState": str, "SubState": str}
-```
+Raises `UnitNotFoundError` if the unit cannot be found.
 
-`ActiveState` is one of `active`, `inactive`, `failed`, `activating`, `deactivating`, `reloading`.
-`SubState` is the unit-type-specific substate (`running`, `dead`, `exited`, `plugged`, `mounted`, etc.).
+**`get_unit_status(service_name: str) -> dict`**
 
-### `start(service_name: str)`
+Returns `{"ActiveState": str, "SubState": str}`.
 
-Enqueues a start job with `mode="replace"` and returns immediately. The job runs asynchronously — use `get_unit_status` to confirm the new state.
+`ActiveState` is one of `active`, `inactive`, `failed`, `activating`, `deactivating`, `reloading`. `SubState` is the unit-type-specific substate (`running`, `dead`, `exited`, `plugged`, `mounted`, etc.).
 
-### `stop(service_name: str)`
+**`get_errors(service_name: str) -> dict`**
 
-Enqueues a stop job with `mode="replace"` and returns immediately.
+Returns `{"Result": str, "ExecMainStatus": int, "ExecMainCode": int}` — the result of the last execution. Falls back to `{"Error": "No additional error information available."}` if the unit is not a service type (e.g., a `.mount` or `.socket` unit).
 
-### `restart(service_name: str)`
+### Control methods
 
-Enqueues a restart job with `mode="replace"` and returns immediately.
+`start`, `stop`, and `restart` enqueue a job with `mode="replace"` and return immediately — the job runs asynchronously. Use `get_unit_status` to confirm the new state.
 
-### `enable(service_name: str)`
+**`start(service_name: str)`**
+
+Enqueues a start job.
+
+**`stop(service_name: str)`**
+
+Enqueues a stop job.
+
+**`restart(service_name: str)`**
+
+Enqueues a restart job.
+
+**`enable(service_name: str)`**
 
 Symlinks the unit file into the machine's wanted-by targets so it starts at boot. Raises `UnitNotEnabledError` if the unit has no `[Install]` section.
-
-### `get_errors(service_name: str) -> dict`
-
-```python
-{"Result": str, "ExecMainStatus": int, "ExecMainCode": int}
-```
-
-Returns the result of the last execution. Falls back to `{"Error": "No additional error information available."}` if the unit is not a service type (e.g., a `.mount` or `.socket` unit).
